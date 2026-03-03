@@ -1,8 +1,8 @@
-# kt-brigadier
+# brigadier-kt
 
 A Kotlin-first DSL and structured execution framework built on top of Mojang's Brigadier command library.
 
-**kt-brigadier does not replace Brigadier** — it enhances it by preserving Brigadier's dispatcher, parsing engine, node
+**brigadier-kt does not replace Brigadier** — it enhances it by preserving Brigadier's dispatcher, parsing engine, node
 system, and execution model while transforming the development experience into a structured, middleware-enabled,
 Kotlin-native command framework.
 
@@ -11,8 +11,8 @@ Kotlin-native command framework.
 ## Table of Contents
 
 - [Introduction](#introduction)
-    - [What is kt-brigadier?](#what-is-kt-brigadier)
-    - [Why Use kt-brigadier?](#why-use-kt-brigadier)
+    - [What is brigadier-kt?](#what-is-brigadier-kt)
+    - [Why Use brigadier-kt?](#why-use-brigadier-kt)
     - [Core Features](#core-features)
 - [Getting Started](#getting-started)
     - [Basic Command](#basic-command)
@@ -39,16 +39,16 @@ Kotlin-native command framework.
 
 ## Introduction
 
-### What is kt-brigadier?
+### What is brigadier-kt?
 
 Brigadier is a powerful, performant, tree-based command parsing library. However, its API is low-level and verbose when
-building complex command trees. kt-brigadier addresses this by providing a clean, idiomatic Kotlin interface while
+building complex command trees. brigadier-kt addresses this by providing a clean, idiomatic Kotlin interface while
 maintaining 100% compatibility with Brigadier's core functionality.
 
-You still use Brigadier's dispatcher and nodes — kt-brigadier simply makes defining them clean, structured, and
+You still use Brigadier's dispatcher and nodes — brigadier-kt simply makes defining them clean, structured, and
 maintainable.
 
-### Why Use kt-brigadier?
+### Why Use brigadier-kt?
 
 **Problems with Pure Brigadier:**
 
@@ -69,7 +69,7 @@ dispatcher.register(
             .then(argument("name", StringArgumentType.word())
                 .then(literal("info")
                     .executes(ctx -> {
-                        String name = ctx . getArgument ("name", String.class);
+                        String name = ctx.getArgument("name", String.class);
                         // resolve group...
                         return 1;
                 }))));
@@ -79,7 +79,7 @@ This becomes increasingly difficult to read and maintain as command trees grow.
 
 ### Core Features
 
-kt-brigadier provides:
+brigadier-kt provides:
 
 - **Clean Kotlin DSL** — Visually structured command definitions
 - **Middleware Guards** — Centralized validation and transformation pipeline
@@ -93,6 +93,17 @@ kt-brigadier provides:
 ---
 
 ## Getting Started
+
+### Compiler Requirements
+
+Argument references (`argRef()` and `createArgRef<T>()`) rely on Kotlin's context parameters feature. You must enable
+the following compiler option in your build configuration:
+
+```
+-Xcontext-parameters
+```
+
+Without this flag, any code using `argRef()` or `createArgRef<T>()` will fail to compile.
 
 ### Basic Command
 
@@ -175,10 +186,10 @@ command<CommandSource>("user") {
 **Instead of Brigadier's verbose approach:**
 
 ```java
-ctx.getArgument("name",String .class)
+ctx.getArgument("name", String.class)
 ```
 
-**Use kt-brigadier's type-safe methods:**
+**Use brigadier-kt's type-safe methods:**
 
 ```kotlin
 arg<String>("name")         // Required argument
@@ -214,34 +225,142 @@ arg<String>("group")
 
 #### The Solution: KtArgumentRef
 
-Bind once, reuse everywhere with strong typing:
+Bind once, reuse everywhere with strong typing. brigadier-kt provides two ways to create argument references:
+
+---
+
+#### `argRef()` — Reference to the Current Argument
+
+`argRef()` creates a reference bound to the argument at the **current DSL scope**. The name and type are inferred
+automatically from context, so no parameters are required.
 
 ```kotlin
-command<CommandSource>("group") {
+argument("group", StringArgumentType.word()) {
+    val groupRawRef = argRef() // Bound to "group", type String
 
-    argument("group", StringArgumentType.word()) {
-        val groupRef = argRef()
+    literal("info") {
+        execute {
+            val name = groupRawRef.get() // Returns String
+            println("Group: $name")
+            SINGLE_SUCCESS
+        }
+    }
+}
+```
 
-        literal("info") {
-            execute {
-                val group = groupRef.get()
-                println("Group: $group")
-                SINGLE_SUCCESS
-            }
+Use `argRef()` when you want a reference to the raw parsed value of the current argument node.
+
+---
+
+#### `createArgRef<T>(name)` — Named Reference with Explicit Type
+
+`createArgRef<T>(name)` creates a reference to **any** argument by name, with an explicitly specified type. This is
+particularly useful when a Guard will transform the argument into a domain object — the ref can be typed to the
+**target type** rather than the raw parsed type.
+
+```kotlin
+argument("group", StringArgumentType.word()) {
+    val groupRef = createArgRef<Group>("group") // Typed to Group, not String
+
+    guard {
+        val group = groupService.find(arg<String>("group"))
+        groupRef.set(group) // Inject the domain object
+        continueCommand()
+    }
+
+    literal("info") {
+        execute {
+            val group = groupRef.get() // Returns Group directly
+            println("Group: ${group.name}")
+            SINGLE_SUCCESS
+        }
+    }
+}
+```
+
+Use `createArgRef<T>(name)` when:
+
+- You need a reference to an argument that will be **transformed** by a Guard
+- The reference type differs from the originally parsed type
+- You want strongly-typed access to a named argument from any scope
+
+---
+
+#### Setting Values via References
+
+A reference created with `createArgRef` is **mutable** — you can write to it using `ref.set(value)`, which is
+equivalent to calling `setArgument(name, value)` directly on the context. This pairs naturally with Guards to inject
+transformed domain objects.
+
+```kotlin
+guard {
+    val group = groupService.find(arg<String>("group"))
+    groupRef.set(group)       // via reference
+    // equivalent to:
+    setArgument("group", group) // via context directly
+    continueCommand()
+}
+```
+
+Both approaches produce the same result. Prefer `ref.set(...)` when you have already declared a `createArgRef` for
+the argument, as it avoids repeating the string key and keeps the type contract explicit.
+
+---
+
+#### Comparison
+
+| Feature                        | `argRef()`              | `createArgRef<T>(name)`      |
+|--------------------------------|-------------------------|------------------------------|
+| Bound to current argument node | ✓                       | ✗ (explicit name)            |
+| Type inferred from context     | ✓ (raw parsed type)     | ✗ (you specify type)         |
+| Supports transformed types     | ✗                       | ✓                            |
+| Mutable (`ref.set(...)`)       | ✗                       | ✓                            |
+| Use case                       | Raw parsed value access | Domain object after transform |
+
+---
+
+#### Full Example
+
+```kotlin
+argument("group", StringArgumentType.word()) {
+    val groupRawRef = argRef()              // String reference (raw parsed)
+    val groupRef = createArgRef<Group>("group") // Group reference (post-transform)
+
+    guard {
+        val name = groupRawRef.get()
+        val group = groupService.find(name)
+
+        if (group == null) {
+            println("Group not found: $name")
+            return@guard abort(NO_SUCCESS)
         }
 
-        literal("delete") {
-            execute {
-                val group = groupRef.get()
-                println("Deleting $group")
-                SINGLE_SUCCESS
-            }
-        }
+        groupRef.set(group) // Inject transformed domain object
+        continueCommand()
+    }
 
-        literal("members") {
+    literal("info") {
+        execute {
+            val group = groupRef.get() // Receives Group object
+            println("Group info: ${group.name} (${group.members.size} members)")
+            SINGLE_SUCCESS
+        }
+    }
+
+    literal("delete") {
+        execute {
+            val group = groupRef.get()
+            groupService.delete(group)
+            println("Deleted group: ${group.name}")
+            SINGLE_SUCCESS
+        }
+    }
+
+    literal("members") {
+        literal("list") {
             execute {
                 val group = groupRef.get()
-                println("Members of $group")
+                println("Members: ${group.members.joinToString()}")
                 SINGLE_SUCCESS
             }
         }
@@ -249,25 +368,18 @@ command<CommandSource>("group") {
 }
 ```
 
-**How It Works:**
-
-- `argRef()` creates a reference to the argument at the current scope
-- The reference is bound to the `"group"` argument
-- Multiple handlers can safely reuse the reference
-- Type information is preserved
-
 **Why This Matters:**
 
-- **Strong Typing** — Compile-time safety
-- **No String Keys** — Eliminate magic strings
-- **Refactoring Support** — IDE can track references
-- **Guard Integration** — Works seamlessly with middleware
+- **Strong Typing** — Compile-time safety for both raw and transformed types
+- **No String Keys** — Eliminate magic strings in execute blocks
+- **Refactoring Support** — IDE can track all usages of a reference
+- **Guard Integration** — `createArgRef` and `ref.set` work naturally in the middleware pipeline
 
 ---
 
 ## Guards: The Middleware System
 
-Guards are one of the **core architectural features** of kt-brigadier. They introduce a structured middleware pipeline
+Guards are one of the **core architectural features** of brigadier-kt. They introduce a structured middleware pipeline
 between parsing and execution, enabling centralized validation and transformation.
 
 ### Understanding Guards
@@ -390,7 +502,7 @@ argument("group", StringArgumentType.word()) {
             SINGLE_SUCCESS
         }
     }
-    
+
     // and so on...
 }
 ```
@@ -407,10 +519,11 @@ argument("group", StringArgumentType.word()) {
 
 ```kotlin
 argument("group", StringArgumentType.word()) {
-    val groupRef = argRef()
+    val groupRawRef = argRef()
+    val groupRef = createArgRef<Group>("group")
 
     guard {
-        val name = groupRef.get()
+        val name = groupRawRef.get()
         val group = groupService.find(name)
 
         if (group == null) {
@@ -418,14 +531,15 @@ argument("group", StringArgumentType.word()) {
             return@guard abort(NO_SUCCESS)
         }
 
-        // Transform string to domain object
+        // Transform string to domain object — both approaches are equivalent
         setArgument("group", group)
+        // or: groupRef.set(group)
         continueCommand()
     }
 
     literal("info") {
         execute {
-            val group = arg<Group>("group") // Now receives Group object
+            val group = groupRef.get() // Receives Group object
             println("Group info: ${group.name} (${group.members.size} members)")
             SINGLE_SUCCESS
         }
@@ -433,7 +547,7 @@ argument("group", StringArgumentType.word()) {
 
     literal("delete") {
         execute {
-            val group = arg<Group>("group") // Same domain object
+            val group = groupRef.get()
             groupService.delete(group)
             println("Deleted group: ${group.name}")
             SINGLE_SUCCESS
@@ -444,7 +558,7 @@ argument("group", StringArgumentType.word()) {
         // Nested commands also receive the transformed Group
         literal("list") {
             execute {
-                val group = arg<Group>("group")
+                val group = groupRef.get()
                 println("Members: ${group.members.joinToString()}")
                 SINGLE_SUCCESS
             }
@@ -515,7 +629,7 @@ Execution never reaches the `create` block.
 
 #### The Solution: Disable Guards for This Subtree
 
-kt-brigadier allows you to explicitly disable the Guard pipeline for a specific execution block:
+brigadier-kt allows you to explicitly disable the Guard pipeline for a specific execution block:
 
 ```kotlin
 literal("create") {
@@ -551,15 +665,17 @@ Therefore you must access the raw argument:
 
 ```kotlin
 val name = arg<String>("group")
+// or: val name = groupRawRef.get()
 ```
 
 You **cannot** do:
 
 ```kotlin
-arg<Group>("group")
+groupRef.get()       // throws — no Group was injected
+arg<Group>("group")  // throws — same reason
 ```
 
-because no `Group` was injected into the context.
+Because no `Group` was injected into the context.
 
 ---
 
@@ -581,8 +697,11 @@ Guards operate on `KtCommandContext`, which extends Brigadier's `CommandContext`
 #### Available Operations
 
 ```kotlin
-// Override or inject an argument
+// Override or inject an argument (by key)
 setArgument(name: String, value: Any)
+
+// Override or inject an argument via a typed reference
+ref.set(value)
 
 // Remove an argument completely (further accessing will throw an exception)
 removeArgument(name: String)
@@ -590,6 +709,19 @@ removeArgument(name: String)
 // Reset argument to original parsed value
 resetArgument(name: String)
 ```
+
+#### `setArgument` vs `ref.set`
+
+Both `setArgument(name, value)` and `ref.set(value)` write to the same underlying mutable context and produce
+identical results. The difference is stylistic:
+
+| Approach              | When to use                                                     |
+|-----------------------|-----------------------------------------------------------------|
+| `setArgument(name, value)` | Quick one-off injection, no prior `createArgRef` declared  |
+| `ref.set(value)`      | You already have a `createArgRef` — keeps the key out of strings |
+
+Prefer `ref.set(...)` in transformation-heavy Guards where a `createArgRef` is already in scope, as it ties the write
+directly to the typed reference and avoids repeating magic strings.
 
 #### Precedence Rules
 
@@ -610,7 +742,7 @@ execute {
 ```
 
 This enables safe, predictable transformation pipelines.
-Of course, you should use IntegerArgumentType instead of StringArgumentType for numeric arguments.
+Of course, you should use `IntegerArgumentType` instead of `StringArgumentType` for numeric arguments.
 
 ---
 
@@ -618,7 +750,7 @@ Of course, you should use IntegerArgumentType instead of StringArgumentType for 
 
 ### Suggestions DSL
 
-Brigadier suggestions normally require manual `CompletableFuture<Suggestions>` handling. kt-brigadier simplifies this
+Brigadier suggestions normally require manual `CompletableFuture<Suggestions>` handling. brigadier-kt simplifies this
 dramatically.
 
 #### Simple Suggestions
@@ -638,7 +770,7 @@ argument("color", StringArgumentType.word()) {
 - `suggests` is called every time the argument needs completion
 - You can use dynamic values based on current context
 - Access `CommandContext` via `context` property
-- Access nativ `SuggestionsBuilder` via `builder` property
+- Access native `SuggestionsBuilder` via `builder` property
 - **Guards do not run during suggestion** — only during execution
 
 #### Suggestions with Tooltips
@@ -721,7 +853,7 @@ command<CommandSource>("admin") {
 - When node visibility matters
 - When you need Brigadier's built-in permission system
 
-#### Guards (kt-brigadier Feature)
+#### Guards (brigadier-kt Feature)
 
 **Purpose:** Validate, transform, and prepare for execution
 
@@ -742,6 +874,8 @@ command<CommandSource>("admin") {
 
 ```kotlin
 argument("group", StringArgumentType.word()) {
+    val groupRef = createArgRef<Group>("group")
+
     guard {
         val name = arg<String>("group")
         val group = groupService.find(name)
@@ -756,11 +890,11 @@ argument("group", StringArgumentType.word()) {
             return@guard abort(NO_SUCCESS)
         }
 
-        setArgument("group", group)
+        groupRef.set(group)
         continueCommand()
     }
 
-    // Handlers receive transformed Group object
+    // Handlers receive transformed Group object via groupRef.get()
 }
 ```
 
@@ -795,8 +929,9 @@ command<CommandSource>("group-admin") {
     requires { hasPermission("admin.access") }  // Node-level access control
 
     argument("group", StringArgumentType.word()) {
+        val groupRef = createArgRef<Group>("group")
+
         guard {
-            // Additional validation with context
             val name = arg<String>("group")
             val group = groupService.find(name)
 
@@ -811,14 +946,14 @@ command<CommandSource>("group-admin") {
                 return@guard abort(NO_SUCCESS)
             }
 
-            setArgument("group", group)
+            groupRef.set(group)
             continueCommand()
         }
 
         literal("delete") {
             requires { hasPermission("admin.group.delete") }  // More specific permission
             execute {
-                val group = arg<Group>("group")
+                val group = groupRef.get()
                 groupService.delete(group)
                 SINGLE_SUCCESS
             }
@@ -867,7 +1002,7 @@ When a command is executed, the following happens in order:
 
 ### Design Principles
 
-kt-brigadier is built on strict architectural decisions:
+brigadier-kt is built on strict architectural decisions:
 
 1. **Non-Invasive Architecture**
     - Brigadier remains completely untouched
@@ -908,17 +1043,17 @@ kt-brigadier is built on strict architectural decisions:
 
 ## Summary
 
-kt-brigadier transforms Brigadier from a low-level parsing API into a structured, middleware-enabled command framework
+brigadier-kt transforms Brigadier from a low-level parsing API into a structured, middleware-enabled command framework
 that embraces Kotlin idioms while preserving Brigadier's power and performance.
 
 ### Key Benefits
 
 ✅ **Clean DSL Structure** — Command trees that match your mental model  
 ✅ **Type-Safe Arguments** — Reified generics eliminate boilerplate  
-✅ **Argument References** — Strongly-typed, reusable bindings  
+✅ **Argument References** — `argRef()` for raw access, `createArgRef<T>()` for typed domain objects  
 ✅ **Middleware Guards** — Centralized validation and transformation  
 ✅ **Domain Transformation** — Work with domain objects, not primitives  
-✅ **Mutable Context** — Safe argument injection and override  
+✅ **Mutable Context** — Safe argument injection via `setArgument` or `ref.set`  
 ✅ **Suggestions DSL** — Simplified completion handling  
 ✅ **Full Compatibility** — Drop-in **enhancement** for Brigadier
 
