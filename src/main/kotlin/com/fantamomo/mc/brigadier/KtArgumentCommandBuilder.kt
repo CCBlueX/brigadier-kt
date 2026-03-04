@@ -3,6 +3,7 @@ package com.fantamomo.mc.brigadier
 import com.fantamomo.mc.brigadier.internal.GuardList
 import com.mojang.brigadier.arguments.ArgumentType
 import com.mojang.brigadier.builder.RequiredArgumentBuilder
+import com.mojang.brigadier.tree.ArgumentCommandNode
 
 /**
  * A command builder for creating argument-based commands in a DSL-style approach.
@@ -28,4 +29,6 @@ class KtArgumentCommandBuilder<S, T>(
     override val guards: GuardList<S>
 ) : KtCommandBuilder<S, RequiredArgumentBuilder<S, T>>() {
     override val builder: RequiredArgumentBuilder<S, T> = RequiredArgumentBuilder.argument(name, type)
+
+    override fun build(): ArgumentCommandNode<S, T> = builder.build()
 }

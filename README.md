@@ -1,8 +1,8 @@
-# kt-brigadier
+# brigadier-kt
 
 A Kotlin-first DSL and structured execution framework built on top of Mojang's Brigadier command library.
 
-**kt-brigadier does not replace Brigadier** — it enhances it by preserving Brigadier's dispatcher, parsing engine, node
+**brigadier-kt does not replace Brigadier** — it enhances it by preserving Brigadier's dispatcher, parsing engine, node
 system, and execution model while transforming the development experience into a structured, middleware-enabled,
 Kotlin-native command framework.
 
@@ -11,8 +11,8 @@ Kotlin-native command framework.
 ## Table of Contents
 
 - [Introduction](#introduction)
-    - [What is kt-brigadier?](#what-is-kt-brigadier)
-    - [Why Use kt-brigadier?](#why-use-kt-brigadier)
+    - [What is brigadier-kt?](#what-is-brigadier-kt)
+    - [Why Use brigadier-kt?](#why-use-brigadier-kt)
     - [Core Features](#core-features)
 - [Getting Started](#getting-started)
     - [Basic Command](#basic-command)
@@ -24,9 +24,17 @@ Kotlin-native command framework.
 - [Guards: The Middleware System](#guards-the-middleware-system)
     - [Understanding Guards](#understanding-guards)
     - [Basic Guard Usage](#basic-guard-usage)
+    - [The runOnSameNode Parameter](#the-runonsamenode-parameter)
     - [Argument Transformation](#argument-transformation)
     - [Disabling Guards](#disabling-guards)
     - [Mutable Command Context](#mutable-command-context)
+- [Redirect, Fork and Forward](#redirect-fork-and-forward)
+    - [Understanding Redirects](#understanding-redirects)
+    - [Node Merging: The Self-Reference Pattern](#node-merging-the-self-reference-pattern)
+    - [redirect](#redirect)
+    - [fork](#fork)
+    - [forward](#forward)
+    - [Guards and Redirects](#guards-and-redirects)
 - [Advanced Features](#advanced-features)
     - [Suggestions DSL](#suggestions-dsl)
     - [Access Control: requires vs Guards](#access-control-requires-vs-guards)
@@ -39,16 +47,16 @@ Kotlin-native command framework.
 
 ## Introduction
 
-### What is kt-brigadier?
+### What is brigadier-kt?
 
 Brigadier is a powerful, performant, tree-based command parsing library. However, its API is low-level and verbose when
-building complex command trees. kt-brigadier addresses this by providing a clean, idiomatic Kotlin interface while
+building complex command trees. brigadier-kt addresses this by providing a clean, idiomatic Kotlin interface while
 maintaining 100% compatibility with Brigadier's core functionality.
 
-You still use Brigadier's dispatcher and nodes — kt-brigadier simply makes defining them clean, structured, and
+You still use Brigadier's dispatcher and nodes — brigadier-kt simply makes defining them clean, structured, and
 maintainable.
 
-### Why Use kt-brigadier?
+### Why Use brigadier-kt?
 
 **Problems with Pure Brigadier:**
 
@@ -69,7 +77,7 @@ dispatcher.register(
             .then(argument("name", StringArgumentType.word())
                 .then(literal("info")
                     .executes(ctx -> {
-                        String name = ctx . getArgument ("name", String.class);
+                        String name = ctx.getArgument("name", String.class);
                         // resolve group...
                         return 1;
                 }))));
@@ -79,7 +87,7 @@ This becomes increasingly difficult to read and maintain as command trees grow.
 
 ### Core Features
 
-kt-brigadier provides:
+brigadier-kt provides:
 
 - **Clean Kotlin DSL** — Visually structured command definitions
 - **Middleware Guards** — Centralized validation and transformation pipeline
@@ -87,12 +95,24 @@ kt-brigadier provides:
 - **Argument References** — Strongly typed, reusable argument bindings
 - **Transformation Pipeline** — Convert parsed strings to domain objects
 - **Mutable Context** — Safe argument injection and override system
+- **Redirect / Fork / Forward** — Full support for Brigadier's node routing system
 - **Suggestions DSL** — Simplified suggestion handling
 - **Full Brigadier Compatibility** — Drop-in enhancement, not a replacement
 
 ---
 
 ## Getting Started
+
+### Compiler Requirements
+
+Argument references (`argRef()` and `createArgRef<T>()`) rely on Kotlin's context parameters feature. You must enable
+the following compiler option in your build configuration:
+
+```
+-Xcontext-parameters
+```
+
+Without this flag, any code using `argRef()` or `createArgRef<T>()` will fail to compile.
 
 ### Basic Command
 
@@ -175,10 +195,10 @@ command<CommandSource>("user") {
 **Instead of Brigadier's verbose approach:**
 
 ```java
-ctx.getArgument("name",String .class)
+ctx.getArgument("name", String.class)
 ```
 
-**Use kt-brigadier's type-safe methods:**
+**Use brigadier-kt's type-safe methods:**
 
 ```kotlin
 arg<String>("name")         // Required argument
@@ -214,34 +234,142 @@ arg<String>("group")
 
 #### The Solution: KtArgumentRef
 
-Bind once, reuse everywhere with strong typing:
+Bind once, reuse everywhere with strong typing. brigadier-kt provides two ways to create argument references:
+
+---
+
+#### `argRef()` — Reference to the Current Argument
+
+`argRef()` creates a reference bound to the argument at the **current DSL scope**. The name and type are inferred
+automatically from context, so no parameters are required.
 
 ```kotlin
-command<CommandSource>("group") {
+argument("group", StringArgumentType.word()) {
+    val groupRawRef = argRef() // Bound to "group", type String
 
-    argument("group", StringArgumentType.word()) {
-        val groupRef = argRef()
+    literal("info") {
+        execute {
+            val name = groupRawRef.get() // Returns String
+            println("Group: $name")
+            SINGLE_SUCCESS
+        }
+    }
+}
+```
 
-        literal("info") {
-            execute {
-                val group = groupRef.get()
-                println("Group: $group")
-                SINGLE_SUCCESS
-            }
+Use `argRef()` when you want a reference to the raw parsed value of the current argument node.
+
+---
+
+#### `createArgRef<T>(name)` — Named Reference with Explicit Type
+
+`createArgRef<T>(name)` creates a reference to **any** argument by name, with an explicitly specified type. This is
+particularly useful when a Guard will transform the argument into a domain object — the ref can be typed to the
+**target type** rather than the raw parsed type.
+
+```kotlin
+argument("group", StringArgumentType.word()) {
+    val groupRef = createArgRef<Group>("group") // Typed to Group, not String
+
+    guard {
+        val group = groupService.find(arg<String>("group"))
+        groupRef.set(group) // Inject the domain object
+        continueCommand()
+    }
+
+    literal("info") {
+        execute {
+            val group = groupRef.get() // Returns Group directly
+            println("Group: ${group.name}")
+            SINGLE_SUCCESS
+        }
+    }
+}
+```
+
+Use `createArgRef<T>(name)` when:
+
+- You need a reference to an argument that will be **transformed** by a Guard
+- The reference type differs from the originally parsed type
+- You want strongly-typed access to a named argument from any scope
+
+---
+
+#### Setting Values via References
+
+A reference created with `createArgRef` is **mutable** — you can write to it using `ref.set(value)`, which is
+equivalent to calling `setArgument(name, value)` directly on the context. This pairs naturally with Guards to inject
+transformed domain objects.
+
+```kotlin
+guard {
+    val group = groupService.find(arg<String>("group"))
+    groupRef.set(group)       // via reference
+    // equivalent to:
+    setArgument("group", group) // via context directly
+    continueCommand()
+}
+```
+
+Both approaches produce the same result. Prefer `ref.set(...)` when you have already declared a `createArgRef` for
+the argument, as it avoids repeating the string key and keeps the type contract explicit.
+
+---
+
+#### Comparison
+
+| Feature                        | `argRef()`              | `createArgRef<T>(name)`       |
+|--------------------------------|-------------------------|-------------------------------|
+| Bound to current argument node | ✓                       | ✗ (explicit name)             |
+| Type inferred from context     | ✓ (raw parsed type)     | ✗ (you specify type)          |
+| Supports transformed types     | ✗                       | ✓                             |
+| Mutable (`ref.set(...)`)       | ✗                       | ✓                             |
+| Use case                       | Raw parsed value access | Domain object after transform |
+
+---
+
+#### Full Example
+
+```kotlin
+argument("group", StringArgumentType.word()) {
+    val groupRawRef = argRef()              // String reference (raw parsed)
+    val groupRef = createArgRef<Group>("group") // Group reference (post-transform)
+
+    guard {
+        val name = groupRawRef.get()
+        val group = groupService.find(name)
+
+        if (group == null) {
+            println("Group not found: $name")
+            return@guard abort(NO_SUCCESS)
         }
 
-        literal("delete") {
-            execute {
-                val group = groupRef.get()
-                println("Deleting $group")
-                SINGLE_SUCCESS
-            }
-        }
+        groupRef.set(group) // Inject transformed domain object
+        continueCommand()
+    }
 
-        literal("members") {
+    literal("info") {
+        execute {
+            val group = groupRef.get() // Receives Group object
+            println("Group info: ${group.name} (${group.members.size} members)")
+            SINGLE_SUCCESS
+        }
+    }
+
+    literal("delete") {
+        execute {
+            val group = groupRef.get()
+            groupService.delete(group)
+            println("Deleted group: ${group.name}")
+            SINGLE_SUCCESS
+        }
+    }
+
+    literal("members") {
+        literal("list") {
             execute {
                 val group = groupRef.get()
-                println("Members of $group")
+                println("Members: ${group.members.joinToString()}")
                 SINGLE_SUCCESS
             }
         }
@@ -249,25 +377,18 @@ command<CommandSource>("group") {
 }
 ```
 
-**How It Works:**
-
-- `argRef()` creates a reference to the argument at the current scope
-- The reference is bound to the `"group"` argument
-- Multiple handlers can safely reuse the reference
-- Type information is preserved
-
 **Why This Matters:**
 
-- **Strong Typing** — Compile-time safety
-- **No String Keys** — Eliminate magic strings
-- **Refactoring Support** — IDE can track references
-- **Guard Integration** — Works seamlessly with middleware
+- **Strong Typing** — Compile-time safety for both raw and transformed types
+- **No String Keys** — Eliminate magic strings in execute blocks
+- **Refactoring Support** — IDE can track all usages of a reference
+- **Guard Integration** — `createArgRef` and `ref.set` work naturally in the middleware pipeline
 
 ---
 
 ## Guards: The Middleware System
 
-Guards are one of the **core architectural features** of kt-brigadier. They introduce a structured middleware pipeline
+Guards are one of the **core architectural features** of brigadier-kt. They introduce a structured middleware pipeline
 between parsing and execution, enabling centralized validation and transformation.
 
 ### Understanding Guards
@@ -335,6 +456,112 @@ command<CommandSource>("admin") {
 **Note:** For simple permission checks, a `requires` predicate is often more appropriate as it affects node visibility.
 Use guards when you need more complex logic or custom error handling.
 
+---
+
+### The `runOnSameNode` Parameter
+
+#### Signature
+
+```kotlin
+fun <S> KtCommandBuilder<S, *>.guard(
+    runOnSameNode: Boolean = true,
+    guard: KtCommandGuard<S>
+)
+```
+
+#### Default Behaviour (`runOnSameNode = true`)
+
+By default, a Guard runs for **every** execute block in its subtree — including any `execute` block defined directly
+on the **same node** where the Guard is declared.
+
+```kotlin
+command<Player>("test") {
+
+    guard { // runOnSameNode = true (default)
+        println("[Guard] Running")
+        continueCommand()
+    }
+
+    literal("hello") {
+        execute { /* Guard runs here */ SINGLE_SUCCESS }
+    }
+
+    execute { /* Guard also runs here */ SINGLE_SUCCESS }
+}
+```
+
+Running `/test` triggers the Guard before the `execute` block, just like running `/test hello` does.
+
+#### Opt-out: `runOnSameNode = false`
+
+When `runOnSameNode = false`, the Guard is **skipped** when the `execute` block on the **same node** is invoked.
+It still runs normally for all child nodes.
+
+```kotlin
+command<Player>("test") {
+
+    guard(false) { // will NOT run when /test itself is executed
+        println("[Global Guard] Executing command as ${source.name}")
+        GuardResult.Continue
+    }
+
+    literal("hello") {
+        execute { /* Guard runs here */ SINGLE_SUCCESS }
+    }
+
+    argument("level", IntegerArgumentType.integer(0, 100)) {
+        execute { /* Guard runs here */ SINGLE_SUCCESS }
+    }
+
+    execute {
+        // Guard does NOT run here
+        SINGLE_SUCCESS
+    }
+}
+```
+
+**Execution behaviour:**
+
+| Command       | Guard runs? | Reason                                                 |
+|---------------|-------------|--------------------------------------------------------|
+| `/test`       | No          | `execute` is on the same node; `runOnSameNode = false` |
+| `/test hello` | Yes         | Child node — `runOnSameNode` does not apply            |
+| `/test 42`    | Yes         | Child node — `runOnSameNode` does not apply            |
+
+#### When to Use `runOnSameNode = false`
+
+This option is useful when a Guard represents logic that is only meaningful for subcommands — for example, logging
+the specific subcommand used, resolving a resource that only subcommands need, or enforcing a requirement that does
+not apply to the base command itself.
+
+```kotlin
+command<Player>("stats") {
+
+    // Log which subcommand the player is using,
+    // but don't interfere when /stats is called with no arguments.
+    guard(false) {
+        println("Player ${source.name} used a stats subcommand")
+        continueCommand()
+    }
+
+    literal("kills") {
+        execute { /* Guard runs */ SINGLE_SUCCESS }
+    }
+
+    literal("deaths") {
+        execute { /* Guard runs */ SINGLE_SUCCESS }
+    }
+
+    execute {
+        // Guard does NOT run - shows summary without logging
+        println("Stats overview for ${source.name}")
+        SINGLE_SUCCESS
+    }
+}
+```
+
+---
+
 ### Argument Transformation
 
 This is where Guards become particularly powerful.
@@ -390,7 +617,7 @@ argument("group", StringArgumentType.word()) {
             SINGLE_SUCCESS
         }
     }
-    
+
     // and so on...
 }
 ```
@@ -407,10 +634,11 @@ argument("group", StringArgumentType.word()) {
 
 ```kotlin
 argument("group", StringArgumentType.word()) {
-    val groupRef = argRef()
+    val groupRawRef = argRef()
+    val groupRef = createArgRef<Group>("group")
 
     guard {
-        val name = groupRef.get()
+        val name = groupRawRef.get()
         val group = groupService.find(name)
 
         if (group == null) {
@@ -418,14 +646,15 @@ argument("group", StringArgumentType.word()) {
             return@guard abort(NO_SUCCESS)
         }
 
-        // Transform string to domain object
+        // Transform string to domain object — both approaches are equivalent
         setArgument("group", group)
+        // or: groupRef.set(group)
         continueCommand()
     }
 
     literal("info") {
         execute {
-            val group = arg<Group>("group") // Now receives Group object
+            val group = groupRef.get() // Receives Group object
             println("Group info: ${group.name} (${group.members.size} members)")
             SINGLE_SUCCESS
         }
@@ -433,7 +662,7 @@ argument("group", StringArgumentType.word()) {
 
     literal("delete") {
         execute {
-            val group = arg<Group>("group") // Same domain object
+            val group = groupRef.get()
             groupService.delete(group)
             println("Deleted group: ${group.name}")
             SINGLE_SUCCESS
@@ -444,7 +673,7 @@ argument("group", StringArgumentType.word()) {
         // Nested commands also receive the transformed Group
         literal("list") {
             execute {
-                val group = arg<Group>("group")
+                val group = groupRef.get()
                 println("Members: ${group.members.joinToString()}")
                 SINGLE_SUCCESS
             }
@@ -515,7 +744,7 @@ Execution never reaches the `create` block.
 
 #### The Solution: Disable Guards for This Subtree
 
-kt-brigadier allows you to explicitly disable the Guard pipeline for a specific execution block:
+brigadier-kt allows you to explicitly disable the Guard pipeline for a specific execution block:
 
 ```kotlin
 literal("create") {
@@ -551,15 +780,17 @@ Therefore you must access the raw argument:
 
 ```kotlin
 val name = arg<String>("group")
+// or: val name = groupRawRef.get()
 ```
 
 You **cannot** do:
 
 ```kotlin
-arg<Group>("group")
+groupRef.get()       // throws — no Group was injected
+arg<Group>("group")  // throws — same reason
 ```
 
-because no `Group` was injected into the context.
+Because no `Group` was injected into the context.
 
 ---
 
@@ -581,8 +812,11 @@ Guards operate on `KtCommandContext`, which extends Brigadier's `CommandContext`
 #### Available Operations
 
 ```kotlin
-// Override or inject an argument
+// Override or inject an argument (by key)
 setArgument(name: String, value: Any)
+
+// Override or inject an argument via a typed reference
+ref.set(value)
 
 // Remove an argument completely (further accessing will throw an exception)
 removeArgument(name: String)
@@ -590,6 +824,19 @@ removeArgument(name: String)
 // Reset argument to original parsed value
 resetArgument(name: String)
 ```
+
+#### `setArgument` vs `ref.set`
+
+Both `setArgument(name, value)` and `ref.set(value)` write to the same underlying mutable context and produce
+identical results. The difference is stylistic:
+
+| Approach                   | When to use                                                      |
+|----------------------------|------------------------------------------------------------------|
+| `setArgument(name, value)` | Quick one-off injection, no prior `createArgRef` declared        |
+| `ref.set(value)`           | You already have a `createArgRef` — keeps the key out of strings |
+
+Prefer `ref.set(...)` in transformation-heavy Guards where a `createArgRef` is already in scope, as it ties the write
+directly to the typed reference and avoids repeating magic strings.
 
 #### Precedence Rules
 
@@ -610,7 +857,319 @@ execute {
 ```
 
 This enables safe, predictable transformation pipelines.
-Of course, you should use IntegerArgumentType instead of StringArgumentType for numeric arguments.
+Of course, you should use `IntegerArgumentType` instead of `StringArgumentType` for numeric arguments.
+
+---
+
+## Redirect, Fork and Forward
+
+Brigadier's node system supports more than simple linear command trees. Using redirects and forks, a node can point
+execution to an entirely different part of the tree — enabling patterns like looping chains, context modifiers, and
+conditional branching. brigadier-kt exposes all three of Brigadier's routing mechanisms as clean DSL functions.
+
+### Understanding Redirects
+
+In a standard command tree, parsing always moves forward: each node consumes a token and descends into a child.
+A **redirect** breaks this rule — after a node is parsed, instead of looking for children on that node, Brigadier
+jumps to the children of a completely different **target node** and continues parsing from there.
+
+This is how Minecraft's `/execute as <target> run <command>` works: after resolving `<target>`, execution doesn't
+stop — it loops back to the `execute` node's children so more subcommands can follow.
+
+There are three variants:
+
+- **`redirect`** — Routes to a target node, optionally transforming the source (1 source → 1 source)
+- **`fork`** — Routes to a target node, producing multiple sources (1 source → n sources)
+- **`forward`** — Low-level combined routing with explicit fork control
+
+---
+
+### Node Merging: The Self-Reference Pattern
+
+A redirect needs a reference to a `CommandNode` as its target. This is straightforward when redirecting to an
+unrelated node. However, a common and important pattern requires a node to **redirect back to itself** — for example,
+so that after processing one modifier, the full modifier chain can be used again.
+
+The challenge is that a node does not exist yet while its DSL block is being defined. brigadier-kt solves this using
+Brigadier's own **node merging** behavior.
+
+When `dispatcher.register(node)` is called, the following happens internally:
+
+```java
+// CommandDispatcher.register:
+public LiteralCommandNode<S> register(final LiteralArgumentBuilder<S> command) {
+    final LiteralCommandNode<S> build = command.build();
+    root.addChild(build);
+    return build;
+}
+
+// CommandNode.addChild — merges if a node with the same name already exists:
+final CommandNode<S> child = children.get(node.getName());
+if (child != null) {
+    // Merge: adopt all children from the new node onto the existing one
+    for (final CommandNode<S> grandchild : node.getChildren()) {
+        child.addChild(grandchild);
+    }
+} else {
+    children.put(node.getName(), node);
+}
+// some code lines where removed
+```
+
+This means you can register the same command name **twice**. The first registration returns the node reference
+immediately; the second registration merges its children onto the already-existing node. The reference obtained from
+the first registration stays valid and can safely be used as a redirect target inside the second registration.
+
+**Pattern:**
+
+```kotlin
+// Step 1: Register an empty shell to obtain the node reference
+val executeNode = dispatcher.register(
+    command<CommandSourceStack>("execute") {
+        requires { hasPermission(LEVEL_GAMEMASTERS) }
+        // if you want to use requires, 
+        // you MUST put it here in the first registration.
+        // If you put it in the second registration, 
+        // it will not be merged and so no permission check will be performed.
+    }
+)
+
+// Step 2: Register the full tree — children are merged onto the existing node.
+// executeNode is now a valid redirect target.
+dispatcher.register(
+    command<CommandSourceStack>("execute") {
+        requires { hasPermission(LEVEL_GAMEMASTERS) }
+
+        literal("run") {
+            redirect(dispatcher.root) // redirect to the dispatcher root
+        }
+
+        literal("as") {
+            argument("targets", EntityArgument.entities()) {
+                fork(executeNode) {          // redirect back to execute's children
+                    val targets = ...
+                    targets.map { context.source.withEntity(it) }
+                }
+            }
+        }
+    }
+)
+```
+
+This is the same technique Minecraft itself uses — the first `dispatcher.register(Commands.literal("execute")...)`
+call in `ExecuteCommand.register` exists solely to capture the node reference before the full tree is built.
+
+---
+
+### redirect
+
+`redirect` routes execution to a target node after the current node is parsed. It accepts an optional
+`SingleRedirectModifier` — a lambda that receives the current context and returns a **single** transformed source.
+If no modifier is given, the source is forwarded unchanged.
+
+```kotlin
+fun <S> KtCommandBuilder<S, *>.redirect(target: CommandNode<S>, modifier: SingleRedirectModifier<S>? = null)
+```
+
+#### Simple Redirect — No Transformation
+
+The most basic use: after this node is parsed, continue with the children of `target` using the same source.
+
+```kotlin
+literal("run") {
+    redirect(dispatcher.root) // /execute run <any command>
+}
+```
+
+#### Redirect with Source Transformation
+
+The modifier receives the current `CommandContext` and returns a **new source**. Parsing then continues at `target`
+using that new source. This is how context modifiers like `positioned`, `rotated`, or `in` work.
+
+```kotlin
+literal("positioned") {
+    argument("pos", Vec3Argument.vec3()) {
+        redirect(executeNode) { context ->
+            context.source
+                .withPosition(/*new pos*/)
+        }
+    }
+}
+
+literal("in") {
+    argument("dimension", DimensionArgument.dimension()) {
+        redirect(executeNode) { context ->
+            context.source.withLevel(/*new level*/)
+        }
+    }
+}
+```
+
+After the argument is parsed, the source is replaced with a new source pointing to the new position or dimension —
+then parsing loops back to `executeNode`, allowing further modifiers or a final `run` to follow.
+
+---
+
+### fork
+
+`fork` routes execution to a target node, but unlike `redirect` it can produce **multiple sources** from a single
+incoming source. Brigadier runs the remaining command tree once for each source in the returned collection.
+
+```kotlin
+fun <S> KtCommandBuilder<S, *>.fork(target: CommandNode<S>, modifier: RedirectModifier<S>)
+```
+
+This is how `/execute as <targets>` works: one command execution fans out into one execution per matched entity.
+
+#### Fork — One Source to Many
+
+```kotlin
+literal("as") {
+    argument("targets", EntityArgument.entities()) {
+        fork(executeNode) { context ->
+            val targets = ...
+            targets.map { context.source.withEntity(it) }
+        }
+    }
+}
+
+literal("at") {
+    argument("targets", EntityArgument.entities()) {
+        fork(executeNode) { context ->
+            val targets = ...
+            targets.map { context.source.withPosition(it.position()) }
+        }
+    }
+}
+```
+
+If the modifier returns an **empty list**, execution is silently canceled — no children of the target node are
+visited. This is how `fork`-based conditionals work: returning the source continues, returning empty aborts.
+
+#### Fork — Conditional Branching
+
+Returning the source or an empty list makes `fork` act as a conditional gate:
+
+```kotlin
+literal("if") {
+    literal("entity") {
+        argument("entities", EntityArgument.entities()) {
+            fork(executeNode) { context ->
+                val target = ...
+                val condition = ...
+                if (condition.matches(target)) {
+                    listOf(context.source.withEntity(target))
+                } else {
+                    emptyList()
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+### forward
+
+`forward` is the low-level primitive that both `redirect` and `fork` build on. It accepts a `RedirectModifier` and an
+explicit `fork` boolean that controls how Brigadier treats the result.
+
+```kotlin
+fun <S> KtCommandBuilder<S, *>.forward(target: CommandNode<S>, fork: Boolean, modifier: RedirectModifier<S>)
+```
+
+| `fork` value | Behaviour                                                                 |
+|--------------|---------------------------------------------------------------------------|
+| `false`      | Expects exactly one source — behaves like `redirect` with a full modifier |
+| `true`       | Expects zero or more sources — behaves like `fork`                        |
+
+In most cases `redirect` and `fork` are the right choice. Use `forward` only when you need precise control over the
+fork flag that the higher-level functions don't expose — for example when wrapping a custom `RedirectModifier`
+implementation.
+
+```kotlin
+argument("targets", EntityArgument.entities()) {
+    forward(
+        target = executeNode,
+        fork = true
+    ) { context ->
+        listOf(...)
+    }
+}
+```
+
+---
+
+### Guards and Redirects
+
+Guards and redirects operate at **different phases** of Brigadier's execution model, and their interaction has
+important consequences.
+
+#### Guards do NOT run at the redirect node
+
+When a node redirects to a target, Guards attached to that **redirect node** are **not executed**. Execution arrives
+at the redirect node during parsing and immediately jumps to the target — there is no execution phase at the
+redirect node itself where Guards could run.
+
+Guards only run during the **execution phase**, which begins at the node where the final command handler lives.
+
+```kotlin
+val executeNode = dispatcher.register(
+    command<CommandSourceStack>("execute") {
+        requires { hasPermission(LEVEL_GAMEMASTERS) }
+    }
+)
+
+dispatcher.register(
+    command<CommandSourceStack>("execute") {
+        requires { hasPermission(LEVEL_GAMEMASTERS) }
+
+        literal("as") {
+            argument("targets", EntityArgument.entities()) {
+
+                // A guard placed here will NEVER run —
+                // this node immediately redirects and has no execute handler.
+                guard {
+                    continueCommand()
+                }
+
+                fork(executeNode) { context ->
+                    ...
+                }
+            }
+        }
+
+        literal("run") {
+            redirect(dispatcher.root)
+        }
+
+        // Guards placed here DO run — this is the execution entry point
+        // when the chain eventually reaches a concrete command after "run".
+    }
+)
+```
+
+#### Guards DO run at the redirect target
+
+When execution reaches the **target** of a redirect through normal command dispatch (i.e. when a command is typed that
+resolves through that node), Guards on the target node and its ancestors run as usual.
+
+In the pattern above, after `/execute as @a run say hello` is fully parsed and `say hello` is dispatched, the Guards
+on the `say` node run normally. The redirect only affected how the source was modified during parsing — not whether
+Guards on the final command run.
+
+**Summary:**
+
+| Location                                       | Guards run?                              |
+|------------------------------------------------|------------------------------------------|
+| Node that calls `redirect(...)` or `fork(...)` | ✗ Never — no execution phase here        |
+| Target node of the redirect                    | ✓ Yes — when reached via normal dispatch |
+| Nodes after `run` / dispatcher root            | ✓ Yes — normal execution flow            |
+
+This means Guards are the right place to put validation that applies to the **final command being run**, not to the
+modifier chain itself. Modifier validation (e.g. "does this entity exist?") belongs in the `fork` or `redirect`
+lambda directly.
 
 ---
 
@@ -618,7 +1177,7 @@ Of course, you should use IntegerArgumentType instead of StringArgumentType for 
 
 ### Suggestions DSL
 
-Brigadier suggestions normally require manual `CompletableFuture<Suggestions>` handling. kt-brigadier simplifies this
+Brigadier suggestions normally require manual `CompletableFuture<Suggestions>` handling. brigadier-kt simplifies this
 dramatically.
 
 #### Simple Suggestions
@@ -638,7 +1197,7 @@ argument("color", StringArgumentType.word()) {
 - `suggests` is called every time the argument needs completion
 - You can use dynamic values based on current context
 - Access `CommandContext` via `context` property
-- Access nativ `SuggestionsBuilder` via `builder` property
+- Access native `SuggestionsBuilder` via `builder` property
 - **Guards do not run during suggestion** — only during execution
 
 #### Suggestions with Tooltips
@@ -721,7 +1280,7 @@ command<CommandSource>("admin") {
 - When node visibility matters
 - When you need Brigadier's built-in permission system
 
-#### Guards (kt-brigadier Feature)
+#### Guards (brigadier-kt Feature)
 
 **Purpose:** Validate, transform, and prepare for execution
 
@@ -742,6 +1301,8 @@ command<CommandSource>("admin") {
 
 ```kotlin
 argument("group", StringArgumentType.word()) {
+    val groupRef = createArgRef<Group>("group")
+
     guard {
         val name = arg<String>("group")
         val group = groupService.find(name)
@@ -756,11 +1317,11 @@ argument("group", StringArgumentType.word()) {
             return@guard abort(NO_SUCCESS)
         }
 
-        setArgument("group", group)
+        groupRef.set(group)
         continueCommand()
     }
 
-    // Handlers receive transformed Group object
+    // Handlers receive transformed Group object via groupRef.get()
 }
 ```
 
@@ -795,8 +1356,9 @@ command<CommandSource>("group-admin") {
     requires { hasPermission("admin.access") }  // Node-level access control
 
     argument("group", StringArgumentType.word()) {
+        val groupRef = createArgRef<Group>("group")
+
         guard {
-            // Additional validation with context
             val name = arg<String>("group")
             val group = groupService.find(name)
 
@@ -811,14 +1373,14 @@ command<CommandSource>("group-admin") {
                 return@guard abort(NO_SUCCESS)
             }
 
-            setArgument("group", group)
+            groupRef.set(group)
             continueCommand()
         }
 
         literal("delete") {
             requires { hasPermission("admin.group.delete") }  // More specific permission
             execute {
-                val group = arg<Group>("group")
+                val group = groupRef.get()
                 groupService.delete(group)
                 SINGLE_SUCCESS
             }
@@ -845,29 +1407,35 @@ When a command is executed, the following happens in order:
    ↓
 3. requires Predicates (if any)
    ↓
-4. Guards Execute (root → leaf order)
+4. Redirect / Fork resolution (if any)
+   │  Guards do NOT run here
+   ↓
+5. Guards Execute (root → leaf order)
+   │  runOnSameNode = false guards are skipped
+   │  if the execute block is on their own node
    ↓
    ├─ Guard 1 at root
    ├─ Guard 2 at intermediate node
    └─ Guard 3 at leaf node
    ↓
-5. All Guards returned GuardResult.Continue?
+6. All Guards returned GuardResult.Continue?
    ├─ YES → Execute Handler
    └─ NO  → Stop (return Guard's abort result)
    ↓
-6. Return Result
+7. Return Result
 ```
 
 **Clear Separation of Concerns:**
 
 - **Parsing** → Brigadier handles syntax and structure
 - **Access Control** → `requires` handles node-level permissions
+- **Routing** → `redirect`, `fork`, `forward` handle execution flow
 - **Validation & Transformation** → Guards handle business validation
 - **Business Logic** → `execute` handles core functionality
 
 ### Design Principles
 
-kt-brigadier is built on strict architectural decisions:
+brigadier-kt is built on strict architectural decisions:
 
 1. **Non-Invasive Architecture**
     - Brigadier remains completely untouched
@@ -908,17 +1476,20 @@ kt-brigadier is built on strict architectural decisions:
 
 ## Summary
 
-kt-brigadier transforms Brigadier from a low-level parsing API into a structured, middleware-enabled command framework
+brigadier-kt transforms Brigadier from a low-level parsing API into a structured, middleware-enabled command framework
 that embraces Kotlin idioms while preserving Brigadier's power and performance.
 
 ### Key Benefits
 
 ✅ **Clean DSL Structure** — Command trees that match your mental model  
 ✅ **Type-Safe Arguments** — Reified generics eliminate boilerplate  
-✅ **Argument References** — Strongly-typed, reusable bindings  
+✅ **Argument References** — `argRef()` for raw access, `createArgRef<T>()` for typed domain objects  
 ✅ **Middleware Guards** — Centralized validation and transformation  
+✅ **`runOnSameNode` Control** — Fine-grained Guard scoping per node  
 ✅ **Domain Transformation** — Work with domain objects, not primitives  
-✅ **Mutable Context** — Safe argument injection and override  
+✅ **Mutable Context** — Safe argument injection via `setArgument` or `ref.set`  
+✅ **Redirect / Fork / Forward** — Full Brigadier routing support with clean DSL  
+✅ **Node Merging** — Self-reference pattern for looping command chains  
 ✅ **Suggestions DSL** — Simplified completion handling  
 ✅ **Full Compatibility** — Drop-in **enhancement** for Brigadier
 
